@@ -1,0 +1,22 @@
+{
+  "Administration":  false,
+  "Audio": true,
+  "Art/Graphics": true,
+  "Business": false,
+  "Companies":  false,
+  "Creative Services": false,
+  "Customer/Technical Support": false,
+  "Design": true,
+  "Localization": true,
+  "Marketing": false,
+  "Other": false,
+  "Production": true,
+  "Programming/Engineering": true,
+  "Public Relations": false,
+  "Quality Assurance": true,
+  "Support": false,
+  "Technology": false,
+  "Thanks": false,
+  "Video/Cinematics":  true,
+  "Writers": true
+}
