@@ -4,9 +4,10 @@
 # Scrape mobygames.com for team sizes to compare over time and by game engine
 # Once mobygames releases their API, this will all be deprecated
 
-import HTMLParser, json, robotparser, time, urllib2
+import HTMLParser, json, robotparser, sys, time, urllib2
 
 userAgent = 'Moby Games Bot (https://github.com/GordonLudlow/mobygamesbot)'
+lastPageRequestTime = time.time()
 
 # The robotparser in python 2.7 doesn't support crawl-delay, this does
 class RobotsTxtParser(robotparser.RobotFileParser):
@@ -45,6 +46,7 @@ class DeveloperPageParser(HTMLParser.HTMLParser):
     def __init__(self, gameLink):
         self.gameLink = gameLink
         self.roles = set()
+        self.rolesOnAllGames = {}
         self.parsingHeader = False
         self.header = None
         HTMLParser.HTMLParser.__init__(self)
@@ -58,11 +60,13 @@ class DeveloperPageParser(HTMLParser.HTMLParser):
             if self.header:
                 for attr in attrs:
                     if attr[0] == 'href':
-                        if self.gameLink == attr[1]:
-                            #print 'found game back link'
-                            self.roles.add(self.header)
-                        #else:
-                            #print 'found some other a href %s (!= %s)' % (attr[1], self.gameLink)
+                        if '/game/' in attr[1]:
+                            if self.header in self.rolesOnAllGames:
+                                self.rolesOnAllGames[self.header] = self.rolesOnAllGames[self.header]+1
+                            else:
+                                self.rolesOnAllGames[self.header] = 1
+                            if self.gameLink == attr[1]:
+                                self.roles.add(self.header)
 
     def handle_endtag(self, tag):
         if tag == 'table':
@@ -106,7 +110,14 @@ def GetContent(url, httpCache, robot):
         # http://www.mobygames.com/forums/dga,2/dgb,3/dgm,223636/
         # "Talking of which, we've run into a couple of people recently who are scraping MobyGames for projects like this. Well, your scraping will soon be unnecessary! Work is officially underway on a MobyGames API - for anyone wanting to use our data for non-commercial purposes. We really want to become _the_ easily usable data source for game info, & will be talking about how you can test the system & get an API key soon."
 
-        time.sleep(robot.crawl_delay)
+        delay = robot.crawl_delay
+        global lastPageRequestTime
+        elapsedTime = time.time() - lastPageRequestTime
+        if elapsedTime < delay:
+            print "waiting %f seconds" % (delay - elapsedTime)
+            time.sleep(delay - elapsedTime)
+        lastPageRequestTime = time.time()
+
         req = urllib2.Request(url, headers={'User-Agent' : userAgent})
         response = urllib2.urlopen(req)
         encoding = response.headers.getparam('charset')
@@ -122,6 +133,13 @@ def GetContent(url, httpCache, robot):
         print 'Error opening url: %s' % url
         print sys.exc_info()[0]
     return contents
+
+def keywithmaxval(d): # See http://stackoverflow.com/questions/268272/getting-key-with-maximum-value-in-dictionary
+     """ a) create a list of the dict's keys and values; 
+         b) return the key with the max value"""  
+     v=list(d.values())
+     k=list(d.keys())
+     return k[v.index(max(v))]
 
 def main():
     robot = RobotsTxtParser('http://www.mobygames.com/robots.txt')
@@ -159,6 +177,18 @@ def main():
                     roles[role].append(teamMember)
                 else:
                     roles[role] = [teamMember]
+            # if the only credit they have for this game is "Other", deduce what they do by their credits on other games
+            if (len(teamMemberParser.roles) == 1) and ('Other' in teamMemberParser.roles) and (len(teamMemberParser.rolesOnAllGames)>1):
+                del teamMemberParser.rolesOnAllGames['Other']
+                #print 'Person credited only as "Other".  Roles on all games:'
+                #for role in teamMemberParser.rolesOnAllGames:
+                #    print '\t%s: %d' % (role, teamMemberParser.rolesOnAllGames[role])
+                role = keywithmaxval(teamMemberParser.rolesOnAllGames)
+                #print '\tPredominant role: %s' % role 
+                if role in roles:
+                    roles[role].append(teamMember)
+                else:
+                    roles[role] = [teamMember]
         devteam = set()
         for role in roles:
             if role not in dev_title:
@@ -168,7 +198,13 @@ def main():
                 for person in roles[role]:
                     devteam.add(person)
         print '%d of these are on the dev team' % len(devteam)
-        print '%d programmers' % len(roles['Programming/Engineering'])
+        if 'Programming/Engineering' in roles:
+            print '%d programmers' % len(roles['Programming/Engineering'])
+        else:
+            print 'No programmers?'
+            print 'Roles are:'
+            for role in roles:
+                print '\t%s' % role
 
 
 if __name__=="__main__":
