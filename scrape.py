@@ -29,18 +29,38 @@ class RobotsTxtParser(robotparser.RobotFileParser):
                 if line.startswith("Crawl-delay:"):
                     self.crawl_delay = float(line[12:])
 
-
 class GamePageParser(HTMLParser.HTMLParser):
     def __init__(self):
-        self.teamMembers = set()
+        self.teamMembers = {}
+        self.newTitle = False
         HTMLParser.HTMLParser.__init__(self)
 
     def handle_starttag(self, tag, attrs):
         if tag == 'a':
             for attr in attrs:
                 if attr[0] == 'href':
-                    if '/developer/sheet/view/developerId,' in attr[1]:
-                        self.teamMembers.add(attr[1])
+                    page = attr[1]
+                    if '/developer/sheet/view/developerId,' in page:
+                        if not page in self.teamMembers:
+                            self.teamMembers[page] = {}
+                        if not 'titles' in self.teamMembers[page]:
+                            self.teamMembers[page]['titles'] = set()
+                        self.teamMembers[page]['titles'].add(self.title)
+        elif tag == 'tr':
+            for attr in attrs:
+                if attr[0] == 'class' and attr[1] == 'crln':
+                    self.newTitle = True
+                    self.title = ''
+
+    def handle_endtag(self, tag):
+        if tag == 'td':
+            self.newTitle = False
+
+    def handle_data(self, data):
+        if self.newTitle:
+            if self.title:
+                self.title = self.title + ' '
+            self.title = self.title + data
 
 class DeveloperPageParser(HTMLParser.HTMLParser):
     def __init__(self, gameLink):
@@ -126,7 +146,14 @@ def GetContent(url, httpCache, robot):
         with open('http_cache.json', 'w') as data_file:
             json.dump(httpCache, data_file)
     except urllib2.HTTPError, e:
-        print 'Http error code - %s. %s' % (e.code, e.fp.read())
+        # If someone has a private profile and we try to read it, we get a 404. 
+        # The error text tells us it's private.
+        # We want to cache the error so we don't keep requesting the 'private profile' error page.
+        contents = e.fp.read()
+        httpCache[url] = contents
+        with open('http_cache.json', 'w') as data_file:
+            json.dump(httpCache, data_file)
+        print 'Http error code - %s. %s' % (e.code, contents)
     except IOError as e:
         print 'I/O error({0}): {1} when downloading {2}'.format(e.errno, e.strerror, url)
     except:
@@ -168,10 +195,31 @@ def main():
             teamMemberContent = GetContent('http://www.mobygames.com%s' % teamMember, httpCache, robot)
             teamMemberParser = DeveloperPageParser(backlink)
             teamMemberParser.feed(teamMemberContent)
-            if not teamMemberParser.roles:
-                print "Didn't find link back to %s from %s" % (backlink, teamMember)
-                print "Cache is stale?  Need to be able to re-cache a developer page if they work on a new game"
-                exit(1)
+            if teamMemberParser.roles:
+                gameParser.teamMembers[teamMember]['roles'] = teamMemberParser.roles
+            else:
+                if 'private profile' in teamMemberContent:
+                    # private profile
+                    print '%s on %s has a private profile' % (teamMember, backlink)
+
+                    # Does someone with a non-private profile have the same title in this game's credits
+                    for title in gameParser.teamMembers[teamMember]['titles']:
+                        if teamMemberParser.roles:
+                            break
+                        for someoneElse in gameParser.teamMembers:
+                            if someoneElse != teamMember and title in gameParser.teamMembers[someoneElse]['titles']:
+                                teamMemberParser.roles = gameParser.teamMembers[someoneElse]['roles']
+                                print 'Someone else was also credited with %s, so assuming:' % title
+                                for role in teamMemberParser.roles:
+                                    print '\t%s' % role
+                                break
+                    if not teamMemberParser.roles:
+                        print "Couldn't find someone else with the same title.  Need to assign based on title on the game page."
+                        exit(1) 
+                else:
+                    print "Didn't find link back to %s from %s" % (backlink, teamMember)
+                    print "Cache is stale?  Need to be able to re-cache a developer page if they work on a new game"
+                    exit(1)
             for role in teamMemberParser.roles:
                 if role in roles:
                     roles[role].append(teamMember)
