@@ -4,7 +4,7 @@
 # Scrape mobygames.com for team sizes to compare over time and by game engine
 # Once mobygames releases their API, this will all be deprecated
 
-import HTMLParser, json, robotparser, sys, time, urllib2
+import codecs, HTMLParser, json, robotparser, sys, time, urllib2
 
 userAgent = 'Moby Games Bot (https://github.com/GordonLudlow/mobygamesbot)'
 lastPageRequestTime = time.time()
@@ -33,6 +33,7 @@ class GamePageParser(HTMLParser.HTMLParser):
     def __init__(self):
         self.teamMembers = {}
         self.newTitle = False
+        self.developedByBlock = False
         HTMLParser.HTMLParser.__init__(self)
 
     def handle_starttag(self, tag, attrs):
@@ -55,12 +56,21 @@ class GamePageParser(HTMLParser.HTMLParser):
     def handle_endtag(self, tag):
         if tag == 'td':
             self.newTitle = False
+        if tag == 'a':
+            self.developedByBlock = False
 
     def handle_data(self, data):
         if self.newTitle:
             if self.title:
                 self.title = self.title + ' '
             self.title = self.title + data
+        if data == 'Developed by':
+            self.developedByBlock = True
+            self.developer = ''
+        elif self.developedByBlock:
+            if self.developer:
+                self.developer = self.developer + ' '
+            self.developer = self.developer + data
 
 class DeveloperPageParser(HTMLParser.HTMLParser):
     def __init__(self, gameLink):
@@ -181,78 +191,96 @@ def main():
     with open('games.json') as data_file:    
         games = json.load(data_file)
 
+    platforms = set()
     for game in games:
-        gameContent = GetContent(game['credits'], httpCache, robot)
-        gameParser = GamePageParser()
-        gameParser.feed(gameContent)
+        for platform in game['metacritic']:
+            platforms.add(platform)
+    with codecs.open('output.txt', encoding='utf-8-sig', mode='w+') as output_file:
+        output_file.write('\t\t\t\t\t\t\tMetacritic scores\n')
+        output_file.write('%s\t%s\t%s\t%s\t%s\t%s\t%s' % ('Game', 'Developer', 'Engine', 'Year released', 'Credited people', 'Dev team size', 'Programmers'))
+        for platform in platforms:
+            output_file.write('\t%s' % platform)
+        output_file.write('\n');
+        for game in games:
+            gameContent = GetContent(game['credits'], httpCache, robot)
+            gameParser = GamePageParser()
+            gameParser.feed(gameContent)
 
-        print '%s credits %d people' % (game['game'], len(gameParser.teamMembers))
+            print '%s (from %s) credits %d people' % (game['game'], gameParser.developer, len(gameParser.teamMembers))
+            output_file.write('%s\t%s\t%s\t%d\t%d' % (game['game'], gameParser.developer,game['engine'],game['year'],len(gameParser.teamMembers)))
 
-        # What did these people do?
-        roles = {}
-        backlink = GetMobyGamePage(game['credits'])
-        for teamMember in gameParser.teamMembers:
-            teamMemberContent = GetContent('http://www.mobygames.com%s' % teamMember, httpCache, robot)
-            teamMemberParser = DeveloperPageParser(backlink)
-            teamMemberParser.feed(teamMemberContent)
-            if teamMemberParser.roles:
-                gameParser.teamMembers[teamMember]['roles'] = teamMemberParser.roles
-            else:
-                if 'private profile' in teamMemberContent:
-                    # private profile
-                    print '%s on %s has a private profile' % (teamMember, backlink)
+            # What did these people do?
+            roles = {}
+            backlink = GetMobyGamePage(game['credits'])
+            for teamMember in gameParser.teamMembers:
+                teamMemberContent = GetContent('http://www.mobygames.com%s' % teamMember, httpCache, robot)
+                teamMemberParser = DeveloperPageParser(backlink)
+                teamMemberParser.feed(teamMemberContent)
+                if teamMemberParser.roles:
+                    gameParser.teamMembers[teamMember]['roles'] = teamMemberParser.roles
+                else:
+                    if 'private profile' in teamMemberContent:
+                        # private profile
+                        print '%s on %s has a private profile' % (teamMember, backlink)
 
-                    # Does someone with a non-private profile have the same title in this game's credits
-                    for title in gameParser.teamMembers[teamMember]['titles']:
-                        if teamMemberParser.roles:
-                            break
-                        for someoneElse in gameParser.teamMembers:
-                            if someoneElse != teamMember and title in gameParser.teamMembers[someoneElse]['titles']:
-                                teamMemberParser.roles = gameParser.teamMembers[someoneElse]['roles']
-                                print 'Someone else was also credited with %s, so assuming:' % title
-                                for role in teamMemberParser.roles:
-                                    print '\t%s' % role
+                        # Does someone with a non-private profile have the same title in this game's credits
+                        for title in gameParser.teamMembers[teamMember]['titles']:
+                            if teamMemberParser.roles:
                                 break
-                    if not teamMemberParser.roles:
-                        print "Couldn't find someone else with the same title.  Need to assign based on title on the game page."
-                        exit(1) 
-                else:
-                    print "Didn't find link back to %s from %s" % (backlink, teamMember)
-                    print "Cache is stale?  Need to be able to re-cache a developer page if they work on a new game"
-                    exit(1)
-            for role in teamMemberParser.roles:
-                if role in roles:
-                    roles[role].append(teamMember)
-                else:
-                    roles[role] = [teamMember]
-            # if the only credit they have for this game is "Other", deduce what they do by their credits on other games
-            if (len(teamMemberParser.roles) == 1) and ('Other' in teamMemberParser.roles) and (len(teamMemberParser.rolesOnAllGames)>1):
-                del teamMemberParser.rolesOnAllGames['Other']
-                #print 'Person credited only as "Other".  Roles on all games:'
-                #for role in teamMemberParser.rolesOnAllGames:
-                #    print '\t%s: %d' % (role, teamMemberParser.rolesOnAllGames[role])
-                role = keywithmaxval(teamMemberParser.rolesOnAllGames)
-                #print '\tPredominant role: %s' % role 
-                if role in roles:
-                    roles[role].append(teamMember)
-                else:
-                    roles[role] = [teamMember]
-        devteam = set()
-        for role in roles:
-            if role not in dev_title:
-                print 'Add %s to dev_titles.json' % role
-                exit(1)
-            if dev_title[role]:
-                for person in roles[role]:
-                    devteam.add(person)
-        print '%d of these are on the dev team' % len(devteam)
-        if 'Programming/Engineering' in roles:
-            print '%d programmers' % len(roles['Programming/Engineering'])
-        else:
-            print 'No programmers?'
-            print 'Roles are:'
+                            for someoneElse in gameParser.teamMembers:
+                                if someoneElse != teamMember and title in gameParser.teamMembers[someoneElse]['titles']:
+                                    teamMemberParser.roles = gameParser.teamMembers[someoneElse]['roles']
+                                    print 'Someone else was also credited with %s, so assuming:' % title
+                                    for role in teamMemberParser.roles:
+                                        print '\t%s' % role
+                                    break
+                        if not teamMemberParser.roles:
+                            print "Couldn't find someone else with the same title.  Need to assign based on title on the game page."
+                            exit(1) 
+                    else:
+                        print "Didn't find link back to %s from %s" % (backlink, teamMember)
+                        print "Cache is stale?  Need to be able to re-cache a developer page if they work on a new game"
+                        exit(1)
+                for role in teamMemberParser.roles:
+                    if role in roles:
+                        roles[role].append(teamMember)
+                    else:
+                        roles[role] = [teamMember]
+                # if the only credit they have for this game is "Other", deduce what they do by their credits on other games
+                if (len(teamMemberParser.roles) == 1) and ('Other' in teamMemberParser.roles) and (len(teamMemberParser.rolesOnAllGames)>1):
+                    del teamMemberParser.rolesOnAllGames['Other']
+                    #print 'Person credited only as "Other".  Roles on all games:'
+                    #for role in teamMemberParser.rolesOnAllGames:
+                    #    print '\t%s: %d' % (role, teamMemberParser.rolesOnAllGames[role])
+                    role = keywithmaxval(teamMemberParser.rolesOnAllGames)
+                    #print '\tPredominant role: %s' % role 
+                    if role in roles:
+                        roles[role].append(teamMember)
+                    else:
+                        roles[role] = [teamMember]
+            devteam = set()
             for role in roles:
-                print '\t%s' % role
+                if role not in dev_title:
+                    print 'Add %s to dev_titles.json' % role
+                    exit(1)
+                if dev_title[role]:
+                    for person in roles[role]:
+                        devteam.add(person)
+            print '%d of these are on the dev team' % len(devteam)
+            if 'Programming/Engineering' in roles:
+                print '%d programmers' % len(roles['Programming/Engineering'])
+                output_file.write('\t%d\t%d' % (len(devteam), len(roles['Programming/Engineering'])))
+            else:
+                print 'No programmers?'
+                print 'Roles are:'
+                for role in roles:
+                    print '\t%s' % role
+                exit(1)
+            for platform in platforms:
+                output_file.write('\t')
+                if platform in game['metacritic']:
+                    output_file.write('%d' % game['metacritic'][platform])
+            output_file.write('\n');
 
 
 if __name__=="__main__":
