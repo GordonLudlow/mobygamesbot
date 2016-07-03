@@ -97,6 +97,19 @@ class DeveloperPageParser(HTMLParser.HTMLParser):
                                 self.rolesOnAllGames[self.header] = 1
                             if self.gameLink == attr[1]:
                                 self.roles.add(self.header)
+                            #else:
+                            #    print "%s isn't %s" % (self.gameLink, attr[1])
+                        #else:
+                        #    print "non game link ", attr[1]
+                    #else:
+                    #    print "non-href attr"
+                    #    for a in attr:
+                    #        print a
+            #else:
+            #    print 'No header, ignoring link: '
+            #    for attr in attrs:
+            #        for a in attr:
+            #            print a
 
     def handle_endtag(self, tag):
         if tag == 'table':
@@ -104,6 +117,7 @@ class DeveloperPageParser(HTMLParser.HTMLParser):
 
     def handle_data(self, data):
         if self.parsingHeader:
+            #print "header is %s" % data
             self.header = data
             self.parsingHeader = False
 # A cached game page shouldn't get stale because MobyGames doesn't really track live teams
@@ -122,8 +136,8 @@ def GetMobyGamePage(creditsUrl):
     start = creditsUrl[:-8].rfind('/')+1
     return '/game/%s' % creditsUrl[start:-8]
 
-def GetContent(url, httpCache, robot):
-    if url in httpCache:
+def GetContent(url, httpCache, robot, forceDownload=False):
+    if (not forceDownload) and (url in httpCache):
         #print 'cached'
         return httpCache[url]
 
@@ -213,34 +227,40 @@ def main():
             roles = {}
             backlink = GetMobyGamePage(game['credits'])
             for teamMember in gameParser.teamMembers:
-                teamMemberContent = GetContent('http://www.mobygames.com%s' % teamMember, httpCache, robot)
-                teamMemberParser = DeveloperPageParser(backlink)
-                teamMemberParser.feed(teamMemberContent)
-                if teamMemberParser.roles:
-                    gameParser.teamMembers[teamMember]['roles'] = teamMemberParser.roles
-                else:
-                    if 'private profile' in teamMemberContent:
-                        # private profile
-                        print '%s on %s has a private profile' % (teamMember, backlink)
-
-                        # Does someone with a non-private profile have the same title in this game's credits
-                        for title in gameParser.teamMembers[teamMember]['titles']:
-                            if teamMemberParser.roles:
-                                break
-                            for someoneElse in gameParser.teamMembers:
-                                if someoneElse != teamMember and title in gameParser.teamMembers[someoneElse]['titles']:
-                                    teamMemberParser.roles = gameParser.teamMembers[someoneElse]['roles']
-                                    print 'Someone else was also credited with %s, so assuming:' % title
-                                    for role in teamMemberParser.roles:
-                                        print '\t%s' % role
-                                    break
-                        if not teamMemberParser.roles:
-                            print "Couldn't find someone else with the same title.  Need to assign based on title on the game page."
-                            exit(1) 
+                for retry in (False, True):
+                    teamMemberContent = GetContent('http://www.mobygames.com%s' % teamMember, httpCache, robot, retry)
+                    teamMemberParser = DeveloperPageParser(backlink)
+                    teamMemberParser.feed(teamMemberContent)
+                    if teamMemberParser.roles:
+                        gameParser.teamMembers[teamMember]['roles'] = teamMemberParser.roles
+                        break # don't need to retry
                     else:
-                        print "Didn't find link back to %s from %s" % (backlink, teamMember)
-                        print "Cache is stale?  Need to be able to re-cache a developer page if they work on a new game"
-                        exit(1)
+                        if 'private profile' in teamMemberContent:
+                            # private profile
+                            print '%s on %s has a private profile' % (teamMember, backlink)
+
+                            # Does someone with a non-private profile have the same title in this game's credits
+                            for title in gameParser.teamMembers[teamMember]['titles']:
+                                if teamMemberParser.roles:
+                                    break
+                                for someoneElse in gameParser.teamMembers:
+                                    if someoneElse != teamMember and title in gameParser.teamMembers[someoneElse]['titles']:
+                                        teamMemberParser.roles = gameParser.teamMembers[someoneElse]['roles']
+                                        print 'Someone else was also credited with %s, so assuming:' % title
+                                        for role in teamMemberParser.roles:
+                                            print '\t%s' % role
+                                        break
+                            if not teamMemberParser.roles:
+                                print "Couldn't find someone else with the same title.  Need to assign based on title on the game page."
+                                exit(1)
+                            break # don't need to retry 
+                        else:
+                            if retry:
+                                print "Didn't find link back to %s from %s" % (backlink, teamMember)
+                                print "Cache is not stale!"
+                                print
+                                print teamMemberContent
+                                exit(1)
                 for role in teamMemberParser.roles:
                     if role in roles:
                         roles[role].append(teamMember)
