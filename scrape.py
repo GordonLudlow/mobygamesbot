@@ -5,8 +5,10 @@
 # Once mobygames releases their API, this will all be deprecated
 
 import codecs, HTMLParser, json, robotparser, sys, time, urllib2
+import sqlite3
 
 userAgent = 'Moby Games Bot (https://github.com/GordonLudlow/mobygamesbot)'
+baseDeveloperUrl = 'http://www.mobygames.com/developer/sheet/view/developerId,'
 lastPageRequestTime = time.time()
 
 # The robotparser in python 2.7 doesn't support crawl-delay, this does
@@ -136,10 +138,32 @@ def GetMobyGamePage(creditsUrl):
     start = creditsUrl[:-8].rfind('/')+1
     return '/game/%s' % creditsUrl[start:-8]
 
+def CacheUrl(url, contents, httpCache):
+    if '/game/' in url:
+        httpCache.execute("INSERT INTO games VALUES (?, ?)", (url, contents))
+    elif baseDeveloperUrl in url:
+        httpCache.execute("INSERT INTO developers VALUES (?,?)", (url[len(baseDeveloperUrl):-1], contents))
+    else:
+        print "Can't cache this url: %s" % url
+        exit(1)
+    
 def GetContent(url, httpCache, robot, forceDownload=False):
-    if (not forceDownload) and (url in httpCache):
-        #print 'cached'
-        return httpCache[url]
+    if not forceDownload:
+        # Look it up in the db
+        if '/game/' in url:
+            httpCache.execute('SELECT contents FROM games where url=?', (url,))
+            row = httpCache.fetchone()
+            if row:        
+                return row[0]
+        elif baseDeveloperUrl in url:
+            httpCache.execute('SELECT contents FROM developers where id=?', (url[len(baseDeveloperUrl):-1],))
+            row = httpCache.fetchone()
+            if row:        
+                return row[0]
+        else:
+            print 'url is neither a game credits page nor a developer page'
+            print url
+            exit(1)
 
     if not robot.can_fetch(userAgent, url):
         print 'This bot has been blocked from scraping mobygames.com by their robots.txt file'
@@ -166,17 +190,13 @@ def GetContent(url, httpCache, robot, forceDownload=False):
         response = urllib2.urlopen(req)
         encoding = response.headers.getparam('charset')
         contents = response.read().decode(encoding)
-        httpCache[url] = contents
-        with open('http_cache.json', 'w') as data_file:
-            json.dump(httpCache, data_file)
+        CacheUrl(url, contents, httpCache)
     except urllib2.HTTPError, e:
         # If someone has a private profile and we try to read it, we get a 404. 
         # The error text tells us it's private.
         # We want to cache the error so we don't keep requesting the 'private profile' error page.
         contents = e.fp.read()
-        httpCache[url] = contents
-        with open('http_cache.json', 'w') as data_file:
-            json.dump(httpCache, data_file)
+        CacheUrl(url, contents, httpCache)
         print 'Http error code - %s. %s' % (e.code, contents)
     except IOError as e:
         print 'I/O error({0}): {1} when downloading {2}'.format(e.errno, e.strerror, url)
@@ -196,9 +216,6 @@ def main():
     robot = RobotsTxtParser('http://www.mobygames.com/robots.txt')
     robot.read()
 
-    with open('http_cache.json') as data_file:
-        httpCache = json.load(data_file)
-
     with open('dev_titles.json') as data_file:
         dev_title = json.load(data_file)
 
@@ -209,12 +226,16 @@ def main():
     for game in games:
         for platform in game['metacritic']:
             platforms.add(platform)
-    with codecs.open('output.txt', encoding='utf-8-sig', mode='w+') as output_file:
+
+    with codecs.open('output.txt', encoding='utf-8-sig', mode='w+') as output_file, sqlite3.connect('http_cache.db') as conn:
         output_file.write('\t\t\t\t\t\t\tMetacritic scores\n')
         output_file.write('%s\t%s\t%s\t%s\t%s\t%s\t%s' % ('Game', 'Developer', 'Engine', 'Year released', 'Credited people', 'Dev team size', 'Programmers'))
         for platform in platforms:
             output_file.write('\t%s' % platform)
-        output_file.write('\n');
+        output_file.write('\n')
+
+        httpCache = conn.cursor()
+
         for game in games:
             gameContent = GetContent(game['credits'], httpCache, robot)
             gameParser = GamePageParser()
@@ -301,6 +322,7 @@ def main():
                 if platform in game['metacritic']:
                     output_file.write('%d' % game['metacritic'][platform])
             output_file.write('\n');
+            conn.commit()
 
 
 if __name__=="__main__":
