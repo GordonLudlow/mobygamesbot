@@ -36,6 +36,8 @@ class GamePageParser(HTMLParser.HTMLParser):
         self.teamMembers = {}
         self.newTitle = False
         self.developedByBlock = False
+        self.genreBlock = False
+        self.foundFirstGenre = True
         HTMLParser.HTMLParser.__init__(self)
 
     def handle_starttag(self, tag, attrs):
@@ -60,7 +62,17 @@ class GamePageParser(HTMLParser.HTMLParser):
             self.newTitle = False
         if tag == 'a':
             self.developedByBlock = False
-
+            if self.genreBlock:
+                self.foundFirstGenre = True
+        if tag == 'div' and self.foundFirstGenre:
+            self.genreBlock = False
+            self.foundFirstGenre = False
+            try:
+                if 'DLC / Add-on' in self.genre:
+                    print self.genre
+                    exit(1)
+            except AttributeError:
+                pass
     def handle_data(self, data):
         if self.newTitle:
             if self.title:
@@ -73,6 +85,13 @@ class GamePageParser(HTMLParser.HTMLParser):
             if self.developer:
                 self.developer = self.developer + ' '
             self.developer = self.developer + data
+        elif data == "Genre":
+            self.genreBlock = True
+            self.genre = ''
+        elif self.genreBlock:
+            if self.genre:
+                self.genre = self.genre + ' '
+            self.genre = self.genre + data
 
 class DeveloperPageParser(HTMLParser.HTMLParser):
     def __init__(self, gameLink):
@@ -129,6 +148,7 @@ class DeveloperPageParser(HTMLParser.HTMLParser):
 
 def GetMobyGamePage(creditsUrl):
     # A credits URL has this format: http://www.mobygames.com/game/<plaform>/<game>/credits
+    # or, for a game released on one platform:  http://www.mobygames.com/game/<game>/credits
     # The corresponding game page is: http://www.mobygames.com/game/<game>
     # As it appears in links from a developer's page: /game/<game>
     # Example: <a href="/game/diablo-iii">
@@ -140,9 +160,9 @@ def GetMobyGamePage(creditsUrl):
 
 def CacheUrl(url, contents, httpCache):
     if '/game/' in url:
-        httpCache.execute("INSERT INTO games VALUES (?, ?)", (url, contents))
+        httpCache.execute("INSERT OR REPLACE INTO games VALUES (?, ?)", (url, contents))
     elif baseDeveloperUrl in url:
-        httpCache.execute("INSERT INTO developers VALUES (?,?)", (url[len(baseDeveloperUrl):-1], contents))
+        httpCache.execute("INSERT OR REPLACE INTO developers VALUES (?,?)", (url[len(baseDeveloperUrl):-1], contents))
     else:
         print "Can't cache this url: %s" % url
         exit(1)
@@ -224,8 +244,12 @@ def main():
 
     platforms = set()
     for game in games:
-        for platform in game['metacritic']:
-            platforms.add(platform)
+        try:
+            for platform in game['metacritic']:
+                platforms.add(platform)
+        except KeyError:
+            print "%s doesn't have metacritic scores." % game['game']
+            exit(1)
 
     with codecs.open('output.txt', encoding='utf-8-sig', mode='w+') as output_file, sqlite3.connect('http_cache.db') as conn:
         output_file.write('\t\t\t\t\t\t\tMetacritic scores\n')
@@ -237,8 +261,13 @@ def main():
         httpCache = conn.cursor()
 
         for game in games:
+            if 'ignore' in game:
+                continue
+            print game['game']
             gameContent = GetContent(game['credits'], httpCache, robot)
             gameParser = GamePageParser()
+            if 'developer' in game:
+                gameParser.developer = game['developer']
             gameParser.feed(gameContent)
 
             print '%s (from %s) credits %d people' % (game['game'], gameParser.developer, len(gameParser.teamMembers))
@@ -311,7 +340,10 @@ def main():
             if 'Programming/Engineering' in roles:
                 print '%d programmers' % len(roles['Programming/Engineering'])
                 output_file.write('\t%d\t%d' % (len(devteam), len(roles['Programming/Engineering'])))
-            else:
+            elif 'programmers' in game:
+                print '%d programmers (who also had other roles)' % game['programmers']
+                output_file.write('\t%d\t%d' % (len(devteam), game['programmers']))            
+            elif not 'no programmers' in game:
                 print 'No programmers?'
                 print 'Roles are:'
                 for role in roles:
